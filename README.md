@@ -135,8 +135,8 @@ Distributed under the GNU GENERAL PUBLIC LICENSE. See `LICENSE.md` for more info
 - PostgreSQL Community
 
 ## 📞 Contact
-- [LinkedIn](https://www.linkedin.com/in/satyam1411pandey/)
-- [GitHub](https://github.com/satyampandey1411)
+- [LinkedIn](https://www.linkedin.com/in/7535-its-vivek/)
+- [GitHub](https://github.com/VIVEK342004)
 
 ---
 

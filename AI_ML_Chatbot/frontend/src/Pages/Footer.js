@@ -19,28 +19,25 @@ const Footer = () => {
         <div className="mb-4 md:mb-0">
           <div className="font-bold text-white mb-2">Contact</div>
           <div className="space-y-1">
-            <div>Name: Sandeep Kumar</div>
-            <div>Mobile: 9982385483</div>
-            <div>Email: ddlsandeep7@gmail.com</div>
+            <div>Name: Vivek Kumar</div>
+            <div>Mobile: 8979261332</div>
+            <div>Email: <a href="mailto:vivekkumar04034@gmail.com" className="hover:text-white">vivekkumar04034@gmail.com</a></div>
           </div>
         </div>
         <div className="mb-4 md:mb-0">
           <div className="font-bold text-white mb-2">Follow Us</div>
           <div className="flex space-x-4">
-            <a href="https://www.linkedin.com/in/skddl007" className="hover:text-white">
+            <a href="https://www.linkedin.com/in/vivek342004/" target="_blank" rel="noopener noreferrer" className="hover:text-white" title="LinkedIn">
               <FaLinkedin size={24} />
             </a>
-            <a href="https://twitter.com/skddl007" className="hover:text-white">
-              <FaTwitter size={24} />
-            </a>
-            <a href="https://github.com/skddl007" className="hover:text-white">
+            <a href="https://github.com/VIVEK342004" target="_blank" rel="noopener noreferrer" className="hover:text-white" title="GitHub">
               <FaGithub size={24} />
             </a>
           </div>
         </div>
       </div>
       <div className="container mx-auto mt-6 flex justify-center text-gray-400">
-        <p className="text-center">Developed by Sandeep Kumar</p>
+        <p className="text-center">Developed by Vivek Kumar</p>
       </div>
     </footer>
   );

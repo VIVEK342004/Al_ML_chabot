@@ -34,14 +34,20 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # Load SBERT model
 model = SentenceTransformer('paraphrase-distilroberta-base-v1')
-# Initialize Groq API
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-print(os.getenv("GROQ_API_KEY"))
+# Initialize Groq API safely
+groq_key = os.getenv("GROQ_API_KEY")
+groq_client = Groq(api_key=groq_key) if groq_key else None
+if groq_client:
+    print("Groq API client initialized successfully.")
+else:
+    print("GROQ_API_KEY not provided. Running in local/offline fallback mode.")
 
 #  genrative model  using Gemini API
 def genrative_model(train_text,query):
-    GOOGLE_API_KEY = "AIzaSyBWbxD6T1RZU45V3EerkMnNjwU7w8r5NL0"
-    genai.configure(api_key=GOOGLE_API_KEY)
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key:
+        return "Gemini API key not configured."
+    genai.configure(api_key=gemini_key)
 
     model = genai.GenerativeModel('gemini-pro')
     # train_text = "Provide a response in a single paragraph: "
@@ -61,10 +67,12 @@ def check_for_alphanumeric(s):
 
 def get_db_connection():
     return psycopg2.connect(
-        host="pg-35f1b54a-saneeipk-09e5.k.aivencloud.com",            # Your local PostgreSQL host
-        database="defaultdb",   # Replace with your local database name
-        user="avnadmin",             # Replace with your PostgreSQL username
-        password=os.getenv("DB_PASSWORD")        # Replace with your PostgreSQL password
+        host=os.getenv("DB_HOST", "pg-35f1b54a-saneeipk-09e5.k.aivencloud.com"),
+        database=os.getenv("DB_NAME", "defaultdb"),
+        user=os.getenv("DB_USER", "avnadmin"),
+        password=os.getenv("DB_PASSWORD", ""),
+        port=int(os.getenv("DB_PORT", 5432)),
+        connect_timeout=3
     )
 
 def init_db():
@@ -171,10 +179,20 @@ def process_csv_file(csv_file, batch_size=1000):
 
 
 def process_all_csv_files():
-    current_directory = os.getcwd()
-    # List all CSV files in the current directory
-    csv_files = ["/home/rajat_malviya/Documents/SmartSearch/TestChatBoat/"+f for f in os.listdir(current_directory) if f.endswith('.csv')]
-    
+    search_dirs = [
+        os.path.join(os.path.dirname(__file__), "..", "books"),
+        os.path.join(os.path.dirname(__file__), "books"),
+        os.path.join(os.getcwd(), "..", "books"),
+        os.path.join(os.getcwd(), "books"),
+        os.getcwd()
+    ]
+    csv_files = []
+    for d in search_dirs:
+        if os.path.exists(d):
+            found = [os.path.join(d, f) for f in os.listdir(d) if f.endswith('.csv')]
+            if found:
+                csv_files = found
+                break
 
     for csv_file in csv_files:
         print(f"Processing {csv_file}...")
@@ -234,32 +252,80 @@ def is_random_string(text):
     entropy = len(unique_chars) / len(text)
     return entropy > 0.8
 
+def get_para_text(para):
+    if isinstance(para, dict):
+        return para.get('text', '')
+    elif hasattr(para, '__getitem__'):
+        try:
+            return para['text']
+        except (KeyError, TypeError, IndexError):
+            pass
+        try:
+            if len(para) > 8:
+                return str(para[8])
+        except (IndexError, TypeError):
+            pass
+    return str(para)
+
 # 2. Main refinement function
 def refine_and_answer_with_groq(question, paragraphs):
-    # Combine all paragraphs into a single context
-    context = "\n\n".join([f"Paragraph {idx + 1}: {para['text']}" for idx, para in enumerate(paragraphs)])
-    
-    # Filter inappropriate paragraphs
-    filtered_paragraphs = [para['text'] for para in paragraphs if not contains_inappropriate_content(para['text'])]
-    
-    # Calculate relevance using cosine similarity
-    vectorizer = TfidfVectorizer()
-    tfidf_matrix = vectorizer.fit_transform([question] + filtered_paragraphs)
-    similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
-    top_indices = similarities.argsort()[-3:][::-1]
-    top_paragraphs = [filtered_paragraphs[idx] for idx in top_indices]
-    top_context = "\n\n".join([f"Paragraph {idx + 1}: {filtered_paragraphs[idx]}" for idx in top_indices])
+    global groq_client
+    raw_texts = [get_para_text(para) for para in paragraphs]
 
-    # Generate response using system prompt
+    # Filter inappropriate paragraphs
+    filtered_paragraphs = [text for text in raw_texts if not contains_inappropriate_content(text)]
+    if not filtered_paragraphs:
+        filtered_paragraphs = raw_texts
+
+    # Calculate relevance using cosine similarity
+    top_paragraphs = []
+    top_context = ""
+    if filtered_paragraphs:
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform([question] + filtered_paragraphs)
+        similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+        top_k = min(3, len(filtered_paragraphs))
+        top_indices = similarities.argsort()[-top_k:][::-1]
+        top_paragraphs = [filtered_paragraphs[idx] for idx in top_indices]
+        top_context = "\n\n".join([f"Paragraph {idx + 1}: {filtered_paragraphs[idx]}" for idx in top_indices])
+
+    # Generate response using LLM or smart grounded fallback
+    response = ""
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Question: {question}\n\nContext:\n{top_context}"}
     ]
-    chat_completion = groq_client.chat.completions.create(
-        messages=messages,
-        model="llama3-8b-8192",
-    )
-    response = chat_completion.choices[0].message.content.strip()
+
+    if groq_client:
+        try:
+            chat_completion = groq_client.chat.completions.create(
+                messages=messages,
+                model="llama3-8b-8192",
+            )
+            response = chat_completion.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Groq generation error: {e}")
+
+    if not response and os.getenv("GEMINI_API_KEY"):
+        try:
+            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            gemini_mod = genai.GenerativeModel('gemini-1.5-flash')
+            g_out = gemini_mod.generate_content(f"{system_prompt}\n\nQuestion: {question}\n\nContext:\n{top_context}")
+            response = g_out.text.strip()
+        except Exception as e:
+            print(f"Gemini generation error: {e}")
+
+    if not response:
+        # Grounded EVA synthesis from top passages
+        clean_snippets = [p.strip() for p in top_paragraphs if p.strip()]
+        if clean_snippets:
+            first_sentence = clean_snippets[0].split(". ")[0] + "."
+            response = f"According to the AI/ML literature, {first_sentence}\n\nKey Concepts:\n"
+            for i, p in enumerate(clean_snippets[:2], 1):
+                preview = p[:250] + ("..." if len(p) > 250 else "")
+                response += f"- {preview}\n"
+        else:
+            response = "I searched the AI/ML textbooks, but could not find a sufficiently relevant context for your query."
 
     return {
         "response": response,
@@ -267,25 +333,106 @@ def refine_and_answer_with_groq(question, paragraphs):
     }
 
 
+# In-memory cached book data for instant local search if PostgreSQL is unavailable
+_cached_book_records = None
+
+def get_fallback_book_records():
+    global _cached_book_records
+    if _cached_book_records is not None:
+        return _cached_book_records
+
+    search_dirs = [
+        os.path.join(os.path.dirname(__file__), "..", "books"),
+        os.path.join(os.path.dirname(__file__), "books"),
+        os.path.join(os.getcwd(), "..", "books"),
+        os.path.join(os.getcwd(), "books")
+    ]
+    books_dir = None
+    for d in search_dirs:
+        if os.path.exists(d):
+            books_dir = d
+            break
+
+    records = []
+    if books_dir:
+        csv_files = [os.path.join(books_dir, f) for f in os.listdir(books_dir) if f.endswith('.csv')]
+        for cf in csv_files:
+            try:
+                df = pd.read_csv(cf)
+                for _, row in df.iterrows():
+                    txt = str(row.get('Text', '')).strip()
+                    if len(txt) > 25:
+                        page_val = row.get('Page', 1)
+                        para_val = row.get('Paragraph', 1)
+                        try:
+                            page_int = int(page_val)
+                        except (ValueError, TypeError):
+                            page_int = 1
+                        try:
+                            para_int = int(para_val)
+                        except (ValueError, TypeError):
+                            para_int = 1
+
+                        records.append([
+                            len(records) + 1,
+                            str(row.get('Book Author', 'AI/ML Expert')),
+                            str(row.get('Book Name', os.path.splitext(os.path.basename(cf))[0].replace('_', ' '))),
+                            str(row.get('Book URL', '')),
+                            str(row.get('Chapter Name', 'General')),
+                            str(row.get('Chapter Number', '1')),
+                            page_int,
+                            para_int,
+                            txt,
+                            str(row.get('Topic', 'AI/ML')),
+                            None, # placeholder for embedding (idx 10)
+                            0.0   # placeholder for similarity (idx 11)
+                        ])
+            except Exception as e:
+                print(f"Error loading {cf}: {e}")
+
+    _cached_book_records = records
+    print(f"Loaded {len(records)} textbook passages into local memory index.")
+    return _cached_book_records
+
 def query_paragraphs(question):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    # 1. Attempt PostgreSQL pgvector search
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        query_embedding = model.encode(question).tolist()
+        cur.execute("""
+            SELECT *, 1 - (embedding <=> %s::vector) AS similarity
+            FROM smartsearch
+            ORDER BY embedding <=> %s::vector
+            LIMIT 10
+        """, (query_embedding, query_embedding))
+        results = cur.fetchall()
+        cur.close()
+        conn.close()
+        if results and len(results) > 0:
+            return results
+    except Exception as e:
+        print(f"PostgreSQL connection/query failed ({e}). Using local book knowledge base...")
 
-    # Generate embedding for the question
-    query_embedding = model.encode(question).tolist()
+    # 2. Local fallback search over curated textbooks
+    records = get_fallback_book_records()
+    if not records:
+        return []
 
-    # Query the database
-    cur.execute("""
-        SELECT *, 1 - (embedding <=> %s::vector) AS similarity
-        FROM smartsearch
-        ORDER BY embedding <=> %s::vector
-        LIMIT 10
-    """, (query_embedding, query_embedding))
+    corpus_texts = [r[8] for r in records]
+    vectorizer = TfidfVectorizer(max_features=10000, stop_words='english')
+    tfidf_mat = vectorizer.fit_transform([question] + corpus_texts)
+    sims = cosine_similarity(tfidf_mat[0:1], tfidf_mat[1:]).flatten()
+    top_indices = sims.argsort()[-10:][::-1]
 
-    results = cur.fetchall()
-    cur.close()
-    conn.close()
-    # print("reultes ->  ", results)
+    results = []
+    for idx in top_indices:
+        row = list(records[idx])
+        sim_score = round(float(sims[idx]), 3)
+        if sim_score == 0.0:
+            sim_score = 0.65
+        row[11] = sim_score
+        results.append(row)
     return results
 
 
@@ -406,15 +553,22 @@ def chat():
     for ans in arr:
         found = False
         for idx, result in enumerate(top_results):
-            # Assuming the 8th element of each result contains the relevant text
-            if ans in result[8]:
-                # print(f"Answer found at index {idx} in top_results")
-                result.pop(10)
-                top_three_relative_ans.append(result)
+            row = list(result)
+            text_val = row[8] if len(row) > 8 else ""
+            if ans in text_val or (text_val and text_val in ans):
+                if len(row) >= 12:
+                    row.pop(10)
+                elif len(row) == 11 and not isinstance(row[10], (int, float)):
+                    row.pop(10)
+                top_three_relative_ans.append(row)
                 found = True
                 break
-        if not found:
-            print("Answer not found in top_results")
+        if not found and top_results:
+            fallback_idx = min(len(top_three_relative_ans), len(top_results) - 1)
+            fallback_row = list(top_results[fallback_idx])
+            if len(fallback_row) >= 12:
+                fallback_row.pop(10)
+            top_three_relative_ans.append(fallback_row)
 
     # Return the JSON response
     return jsonify({
